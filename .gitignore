@@ -12,6 +12,16 @@
 
 # Package Files #
 *.jar
+
+# Maven / local config
+target/
+dist/
+forum.properties
+
+# Eclipse (optional — uncomment if you use Eclipse without Maven import)
+# .classpath
+# .project
+# .settings/
 *.war
 *.nar
 *.ear
