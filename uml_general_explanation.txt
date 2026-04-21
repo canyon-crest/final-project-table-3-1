@@ -1,0 +1,48 @@
+UML Overview - Forum App (Class Connections)
+
+Layers / groups:
+- Startup: ForumApp
+- UI: MainWindow, LoginDialog, RegisterDialog
+- Service: ForumService, ForumSession
+- DB: ConnectionManager, RepositoryBase, UserRepository, CategoryRepository, ThreadRepository
+- Model: StorableEntity, ForumUser, CategoryInfo
+
+How classes connect:
+1) ForumApp creates ForumSession + repositories and passes them into ForumService.
+2) ForumApp creates MainWindow and gives it ForumService.
+3) MainWindow opens LoginDialog/RegisterDialog, and both dialogs call ForumService methods.
+4) ForumService calls repository methods for SQL operations.
+5) RepositoryBase provides openConnection(), which uses ConnectionManager.getConnection().
+6) Repositories return model objects (ForumUser, CategoryInfo) to ForumService/UI.
+
+Main method flow examples:
+- Login flow:
+  LoginDialog.onOk() -> ForumService.attemptLogin(username, password)
+  -> UserRepository.findByUsername(...)
+  -> UserRepository.passwordMatches(...)
+  -> ForumSession.setCurrentUser(...)
+  -> MainWindow.refreshAfterLogin()
+
+- Register flow:
+  RegisterDialog.onRegister() -> ForumService.register(username, password)
+  -> UserRepository.findByUsername(...)
+  -> UserRepository.insertUser(...)
+
+- Category load flow:
+  MainWindow.reloadCategories() -> ForumService.loadCategoriesSorted()
+  -> CategoryRepository.findAll()
+
+- Make post flow:
+  MainWindow.makePost() -> ForumService.createPost(categoryId, title, content)
+  -> ThreadRepository.insertThread(...)
+
+Important UML relationships:
+- Inheritance:
+  UserRepository/CategoryRepository/ThreadRepository -> RepositoryBase
+  ForumUser/CategoryInfo -> StorableEntity
+- Has-a (composition style in constructor wiring):
+  ForumService has ForumSession + repositories
+  MainWindow has ForumService
+- Associations:
+  LoginDialog and RegisterDialog use ForumService
+  LoginDialog also calls MainWindow.refreshAfterLogin()

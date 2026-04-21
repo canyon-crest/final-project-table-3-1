@@ -1,0 +1,10 @@
+# Copy this file to forum.properties next to the JAR / project root (working directory).
+# Never commit forum.properties — it contains secrets.
+
+# TiDB Cloud / MySQL-compatible JDBC URL (add SSL params as required by your cluster).
+# Example:
+# db.url=jdbc:mysql://YOUR_HOST:4000/cca_forum_db?sslMode=VERIFY_IDENTITY&enabledTLSProtocols=TLSv1.2,TLSv1.3
+db.url=
+
+db.user=
+db.password=
