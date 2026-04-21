@@ -145,6 +145,10 @@ public class MainWindow extends JFrame {
         subtitle.setForeground(TEXT_MUTED);
         subtitle.setAlignmentX(CENTER_ALIGNMENT);
 
+        JButton testConnection = new JButton("Test connection");
+        testConnection.addActionListener(e -> testConnection());
+        testConnection.setAlignmentX(CENTER_ALIGNMENT);
+
         JLabel imagePlaceholder = new JLabel("Homepage image placeholder (add your picture later)", SwingConstants.CENTER);
         imagePlaceholder.setOpaque(true);
         imagePlaceholder.setBackground(PLACEHOLDER_BG);
@@ -154,10 +158,13 @@ public class MainWindow extends JFrame {
         imagePlaceholder.setMaximumSize(new Dimension(460, 220));
         imagePlaceholder.setMinimumSize(new Dimension(460, 220));
         imagePlaceholder.setAlignmentX(CENTER_ALIGNMENT);
+        styleSecondaryButton(testConnection);
 
         home.add(welcome);
         home.add(Box.createVerticalStrut(10));
         home.add(subtitle);
+        home.add(Box.createVerticalStrut(16));
+        home.add(testConnection);
         home.add(Box.createVerticalStrut(28));
         home.add(imagePlaceholder);
         home.add(Box.createVerticalGlue());
@@ -197,16 +204,12 @@ public class MainWindow extends JFrame {
         makePost.addActionListener(e -> makePost());
         JButton openPost = new JButton("Open post");
         openPost.addActionListener(e -> openSelectedPost());
-        JButton testConnection = new JButton("Test connection");
-        testConnection.addActionListener(e -> testConnection());
         styleSecondaryButton(reload);
         stylePrimaryButton(makePost);
         styleSecondaryButton(openPost);
-        styleSecondaryButton(testConnection);
         south.add(reload);
         south.add(makePost);
         south.add(openPost);
-        south.add(testConnection);
 
         panel.add(split, BorderLayout.CENTER);
         panel.add(south, BorderLayout.SOUTH);
