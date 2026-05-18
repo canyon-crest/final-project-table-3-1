@@ -9,6 +9,7 @@ import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 
 import forum.db.CategoryRepository;
+import forum.db.CommentRepository;
 import forum.db.ConnectionManager;
 import forum.db.ThreadRepository;
 import forum.db.UserRepository;
@@ -57,7 +58,8 @@ public final class ForumApp {
                     session,
                     new UserRepository(),
                     new CategoryRepository(),
-                    new ThreadRepository());
+                    new ThreadRepository(),
+                    new CommentRepository());
             MainWindow window = new MainWindow(service);
             window.setVisible(true);
         });

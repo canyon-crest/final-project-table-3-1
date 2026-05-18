@@ -1,14 +1,27 @@
 package forum.service;
 
+import java.io.File;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
+import forum.ai.AiConfig;
+import forum.ai.AiOrchestrator;
+import forum.ai.AiProvider;
+import forum.ai.AiRequest;
+import forum.ai.KimiProvider;
+import forum.ai.NimProvider;
 import forum.db.CategoryRepository;
+import forum.db.CommentRepository;
 import forum.db.ThreadRepository;
 import forum.db.UserRepository;
+import forum.model.AvatarOption;
 import forum.model.CategoryInfo;
+import forum.model.CommentInfo;
 import forum.model.ForumUser;
 import forum.model.ThreadInfo;
 
@@ -21,19 +34,39 @@ public class ForumService {
     private final UserRepository users;
     private final CategoryRepository categories;
     private final ThreadRepository threads;
+    private final CommentRepository comments;
+    private final AiConfig aiConfig;
+    private final AiOrchestrator aiOrchestrator;
+    private final ExecutorService aiExecutor;
+    private Long aiBotUserId;
+    public static final String AI_BOT_USERNAME = "kimi_bot";
+    private static final String AI_PENDING_MESSAGE = "[AI] ...";
+    private String lastUserMessage;
 
     /**
      * @param session    shared login state
      * @param users      user persistence
      * @param categories category persistence
      * @param threads thread persistence
+     * @param comments   comment persistence
      */
     public ForumService(ForumSession session, UserRepository users, CategoryRepository categories,
-            ThreadRepository threads) {
+            ThreadRepository threads, CommentRepository comments) {
         this.session = session;
         this.users = users;
         this.categories = categories;
         this.threads = threads;
+        this.comments = comments;
+        this.aiConfig = AiConfig.loadFromFile(new File("forum.properties"));
+        AiProvider provider = "nim".equalsIgnoreCase(aiConfig.getProvider())
+                ? new NimProvider()
+                : new KimiProvider(aiConfig);
+        this.aiOrchestrator = new AiOrchestrator(aiConfig, provider);
+        this.aiExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "forum-ai-worker");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     /**
@@ -41,6 +74,19 @@ public class ForumService {
      */
     public ForumSession getSession() {
         return session;
+    }
+
+    /**
+     * Returns and clears the last user-facing message from service operations.
+     */
+    public String consumeLastUserMessage() {
+        String msg = lastUserMessage;
+        lastUserMessage = null;
+        return msg;
+    }
+
+    public boolean isAiBotUsername(String username) {
+        return username != null && AI_BOT_USERNAME.equalsIgnoreCase(username.trim());
     }
 
     /**
@@ -79,11 +125,75 @@ public class ForumService {
         if (!ForumUser.isValidUsername(username) || password == null || password.isEmpty()) {
             return false;
         }
-        if (users.findByUsername(username.trim()).isPresent()) {
+        String normalized = username.trim();
+        if (AI_BOT_USERNAME.equalsIgnoreCase(normalized)) {
             return false;
         }
-        long id = users.insertUser(username.trim(), password);
+        if (users.findByUsername(normalized).isPresent()) {
+            return false;
+        }
+        long id = users.insertUser(normalized, password);
         return id > 0;
+    }
+
+    /**
+     * Updates the logged-in user's username and refreshes session data.
+     *
+     * @param newUsername proposed new name
+     * @return true if update was applied
+     * @throws SQLException on database errors
+     */
+    public boolean updateCurrentUsername(String newUsername) throws SQLException {
+        if (!session.isLoggedIn() || !ForumUser.isValidUsername(newUsername)) {
+            return false;
+        }
+        String normalized = newUsername.trim();
+        if (AI_BOT_USERNAME.equalsIgnoreCase(normalized)) {
+            return false;
+        }
+        ForumUser current = session.getCurrentUser();
+        if (current.getUsername().equals(normalized)) {
+            return true;
+        }
+        if (users.findByUsername(normalized).isPresent()) {
+            return false;
+        }
+        boolean updated = users.updateUsername(current.getId(), normalized);
+        if (updated) {
+            session.setCurrentUser(new ForumUser(current.getId(), normalized, current.getPasswordHash(),
+                    current.getAvatarHeadpieceId(), current.getAvatarClothingId(), current.getAvatarAccessoryId()));
+        }
+        return updated;
+    }
+
+    public List<AvatarOption> loadHeadpieces() throws SQLException {
+        return users.findAllHeadpieces();
+    }
+
+    public List<AvatarOption> loadClothing() throws SQLException {
+        return users.findAllClothing();
+    }
+
+    public List<AvatarOption> loadAccessories() throws SQLException {
+        return users.findAllAccessories();
+    }
+
+    public boolean updateCurrentAvatarSelection(Long headpieceId, Long clothingId, Long accessoryId) throws SQLException {
+        if (!session.isLoggedIn()) {
+            return false;
+        }
+        ForumUser current = session.getCurrentUser();
+        boolean ok = users.updateAvatarSelection(current.getId(), headpieceId, clothingId, accessoryId);
+        if (ok) {
+            session.setCurrentUser(new ForumUser(
+                    current.getId(),
+                    current.getUsername(),
+                    current.getPasswordHash(),
+                    headpieceId,
+                    clothingId,
+                    accessoryId));
+        }
+        return ok;
     }
 
     /**
@@ -134,18 +244,237 @@ public class ForumService {
     }
 
     /**
+     * Loads comments for a thread, oldest first.
+     *
+     * @param threadId thread id
+     * @return comments with author names
+     * @throws SQLException on database errors
+     */
+    public List<CommentInfo> loadCommentsForThread(long threadId) throws SQLException {
+        return comments.findByThreadId(threadId);
+    }
+
+    /**
+     * Adds a top-level comment on a thread.
+     *
+     * @param threadId target thread
+     * @param content  comment body
+     * @return true if inserted
+     * @throws SQLException on database errors
+     */
+    public boolean addComment(long threadId, String content) throws SQLException {
+        return addComment(threadId, null, content);
+    }
+
+    /**
+     * Adds a comment on a thread; if parentCommentId is set, this is a reply.
+     *
+     * @param threadId target thread
+     * @param parentCommentId comment being replied to, or {@code null} for top-level
+     * @param content comment body
+     * @return true if inserted
+     * @throws SQLException on database errors
+     */
+    public boolean addComment(long threadId, Long parentCommentId, String content) throws SQLException {
+        lastUserMessage = null;
+        if (!session.isLoggedIn()) {
+            lastUserMessage = "Log in first to add a comment.";
+            return false;
+        }
+        if (content == null || content.isBlank()) {
+            lastUserMessage = "Enter comment text.";
+            return false;
+        }
+        String trimmed = content.trim();
+        if (isAiCommand(trimmed)) {
+            return handleAiCommand(threadId, parentCommentId, trimmed);
+        }
+        long authorId = session.getCurrentUser().getId();
+        long id = comments.insertComment(threadId, authorId, parentCommentId, trimmed);
+        return id > 0;
+    }
+
+    private boolean handleAiCommand(long threadId, Long parentCommentId, String rawCommand) throws SQLException {
+        String userPrompt = rawCommand.length() <= 3 ? "" : rawCommand.substring(3);
+        if (userPrompt.startsWith(" ")) {
+            userPrompt = userPrompt.substring(1);
+        }
+        if (userPrompt.isEmpty()) {
+            lastUserMessage = "Usage: /ai <prompt>";
+            return false;
+        }
+        if (userPrompt.length() > aiConfig.getMaxPromptChars()) {
+            lastUserMessage = "Prompt is too long. Max " + aiConfig.getMaxPromptChars() + " characters.";
+            return false;
+        }
+        long authorId = session.getCurrentUser().getId();
+        long userCommandCommentId = comments.insertComment(threadId, authorId, parentCommentId, rawCommand.trim());
+        if (userCommandCommentId <= 0L) {
+            lastUserMessage = "Could not add comment.";
+            return false;
+        }
+        long botId = ensureAiBotUserId();
+        if (botId <= 0L) {
+            return true;
+        }
+        long pendingAiCommentId = comments.insertComment(threadId, botId, userCommandCommentId, AI_PENDING_MESSAGE);
+        if (pendingAiCommentId <= 0L) {
+            return true;
+        }
+
+        boolean summarize = isSummarizeCommand(userPrompt);
+        Optional<ThreadInfo> thread = threads.findById(threadId);
+        String threadTitle = thread.map(ThreadInfo::getTitle).orElse("Thread #" + threadId);
+        String threadContent = thread.map(ThreadInfo::getContent).orElse("");
+        if (threadContent.length() > 900) {
+            threadContent = threadContent.substring(0, 900) + "...";
+        }
+        List<String> recent;
+        if (summarize) {
+            List<CommentInfo> allComments = comments.findByThreadId(threadId);
+            recent = extractRecentCommentContext(allComments, aiConfig.getMaxContextComments());
+        } else {
+            // Keep non-summary /ai prompts isolated from older thread chatter.
+            recent = List.of();
+        }
+        int adaptiveOutputTokens = computeAdaptiveOutputTokenBudget(userPrompt, summarize, recent.size());
+        AiRequest request = new AiRequest(
+                threadTitle,
+                threadContent,
+                session.getCurrentUser().getUsername(),
+                userPrompt,
+                summarize,
+                recent,
+                adaptiveOutputTokens);
+        String cooldownKey = session.getCurrentUser().getId() + ":" + threadId;
+        aiExecutor.execute(() -> completeAiPlaceholderComment(pendingAiCommentId, cooldownKey, request));
+        return true;
+    }
+
+    private boolean isAiCommand(String text) {
+        return text != null && text.trim().toLowerCase().startsWith("/ai ");
+    }
+
+    private boolean isSummarizeCommand(String prompt) {
+        String p = prompt == null ? "" : prompt.trim().toLowerCase();
+        return "summarize".equals(p)
+                || "summarize this thread".equals(p)
+                || p.startsWith("summarize ");
+    }
+
+    private List<String> extractRecentCommentContext(List<CommentInfo> commentsList, int maxContextComments) {
+        List<String> out = new ArrayList<>();
+        if (commentsList == null || commentsList.isEmpty()) {
+            return out;
+        }
+        int max = Math.max(1, maxContextComments);
+        int start = Math.max(0, commentsList.size() - max);
+        for (int i = start; i < commentsList.size(); i++) {
+            CommentInfo c = commentsList.get(i);
+            String body = c.getContent() == null ? "" : c.getContent().trim();
+            if (body.isEmpty()) {
+                continue;
+            }
+            if (isAiBotUsername(c.getAuthorUsername())) {
+                continue;
+            }
+            if (body.startsWith("/ai ") || body.startsWith("[AI]")) {
+                continue;
+            }
+            if (body.length() > 220) {
+                body = body.substring(0, 220) + "...";
+            }
+            out.add(c.getAuthorUsername() + ": " + body);
+        }
+        return out;
+    }
+
+    private int computeAdaptiveOutputTokenBudget(String userPrompt, boolean summarizeMode, int contextCount) {
+        int configured = Math.max(32, aiConfig.getMaxOutputTokens());
+        int budget = configured;
+        String lower = userPrompt == null ? "" : userPrompt.toLowerCase();
+
+        // Verbose asks are more likely to hit hard limits; trim the budget and rely on concise instructions.
+        if (lower.contains("story") || lower.contains("detailed") || lower.contains("exactly")
+                || lower.contains("example") || lower.contains("step by step")) {
+            budget -= 40;
+        }
+        if (summarizeMode) {
+            budget = Math.min(budget, 180);
+        }
+        int promptLength = userPrompt == null ? 0 : userPrompt.length();
+        if (promptLength > 500) {
+            budget -= 24;
+        } else if (promptLength > 250) {
+            budget -= 12;
+        }
+        if (contextCount > 8) {
+            budget -= 12;
+        }
+        return Math.max(80, Math.min(configured, budget));
+    }
+
+    private void completeAiPlaceholderComment(long pendingAiCommentId, String cooldownKey, AiRequest request) {
+        String finalText;
+        if (!aiConfig.isEnabled()) {
+            finalText = "[AI] AI is disabled. Set ai.enabled=true in forum.properties.";
+        } else {
+            try {
+                String reply = aiOrchestrator.generate(cooldownKey, request);
+                if (reply == null || reply.isBlank()) {
+                    finalText = "[AI] Sorry, I couldn't generate a response right now.";
+                } else {
+                    finalText = "[AI] " + reply.trim();
+                }
+            } catch (Exception ex) {
+                finalText = "[AI] Sorry, the AI request failed. Please try again.";
+            }
+        }
+        try {
+            comments.updateCommentContent(pendingAiCommentId, finalText);
+        } catch (SQLException ignored) {
+            // If update fails, leave placeholder as-is.
+        }
+    }
+
+    private long ensureAiBotUserId() throws SQLException {
+        if (aiBotUserId != null && aiBotUserId.longValue() > 0L) {
+            return aiBotUserId.longValue();
+        }
+        Optional<ForumUser> existing = users.findByUsername(AI_BOT_USERNAME);
+        if (existing.isPresent()) {
+            aiBotUserId = Long.valueOf(existing.get().getId());
+            return aiBotUserId.longValue();
+        }
+        String generatedPassword = "bot-" + UUID.randomUUID() + "-" + UUID.randomUUID();
+        long created = users.insertUser(AI_BOT_USERNAME, generatedPassword);
+        if (created > 0L) {
+            aiBotUserId = Long.valueOf(created);
+            return created;
+        }
+        return -1L;
+    }
+
+    /**
      * In-place selection sort — demonstrates explicit algorithmic steps for the project rubric.
+     * AP CSA Note: This is a classic selection sort algorithm.
+     * It finds the minimum element in the unsorted portion and swaps it to the front.
      *
      * @param list categories to reorder
      */
     void selectionSortBySortOrder(List<CategoryInfo> list) {
         for (int i = 0; i < list.size(); i++) {
+            // Assume the minimum is the first element of the unsorted part
             int min = i;
+            
+            // Iterate through the rest of the list to find the actual minimum
             for (int j = i + 1; j < list.size(); j++) {
                 if (list.get(j).getSortOrder() < list.get(min).getSortOrder()) {
                     min = j;
                 }
             }
+            
+            // Swap if a smaller element was found
             if (min != i) {
                 CategoryInfo tmp = list.get(i);
                 list.set(i, list.get(min));

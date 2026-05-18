@@ -2,7 +2,6 @@ package forum.ui;
 
 import java.awt.BorderLayout;
 import java.awt.GridLayout;
-import java.sql.SQLException;
 
 import javax.swing.JButton;
 import javax.swing.JDialog;
@@ -12,6 +11,7 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JTextField;
+import javax.swing.SwingWorker;
 
 import forum.model.ForumUser;
 import forum.service.ForumService;
@@ -86,17 +86,43 @@ public class RegisterDialog extends JDialog {
             return;
         }
 
-        try {
-            if (forumService.register(user, pass)) {
-                JOptionPane.showMessageDialog(this, "Account created. You can log in now.", "Success",
-                        JOptionPane.INFORMATION_MESSAGE);
-                dispose();
-            } else {
-                JOptionPane.showMessageDialog(this, "Could not register (name may be taken or rules failed).",
-                        "Register failed", JOptionPane.ERROR_MESSAGE);
+        setInputsEnabled(false);
+        setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.WAIT_CURSOR));
+
+        // AP CSA Note: BCrypt hashing is intentionally slow, so we run it off the UI thread.
+        SwingWorker<Boolean, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Boolean doInBackground() throws Exception {
+                return forumService.register(user, pass);
             }
-        } catch (SQLException ex) {
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "Database error", JOptionPane.ERROR_MESSAGE);
-        }
+
+            @Override
+            protected void done() {
+                setCursor(java.awt.Cursor.getDefaultCursor());
+                setInputsEnabled(true);
+                try {
+                    if (Boolean.TRUE.equals(get())) {
+                        JOptionPane.showMessageDialog(RegisterDialog.this, "Account created. You can log in now.",
+                                "Success", JOptionPane.INFORMATION_MESSAGE);
+                        dispose();
+                    } else {
+                        JOptionPane.showMessageDialog(RegisterDialog.this,
+                                "Could not register (name may be taken or rules failed).",
+                                "Register failed", JOptionPane.ERROR_MESSAGE);
+                    }
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    JOptionPane.showMessageDialog(RegisterDialog.this, cause.getMessage(), "Database error",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void setInputsEnabled(boolean enabled) {
+        usernameField.setEnabled(enabled);
+        passwordField.setEnabled(enabled);
+        confirmField.setEnabled(enabled);
     }
 }

@@ -8,3 +8,19 @@ db.url=
 
 db.user=
 db.password=
+
+# Optional AI chatbot settings (Moonshot/Kimi PoC)
+# Set ai.enabled=true only after entering a valid key.
+ai.enabled=false
+ai.provider=kimi
+ai.base_url=https://api.moonshot.ai/v1/chat/completions
+ai.api_key=
+ai.model=moonshot-v1-8k
+ai.timeout_ms=15000
+ai.max_output_tokens=220
+# Optional: extra follow-up passes only when provider reports truncation (finish_reason=length).
+ai.max_continuations=1
+ai.max_context_comments=12
+ai.max_prompt_chars=1200
+ai.retry_count=1
+ai.cooldown_ms=2500

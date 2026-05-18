@@ -3,11 +3,11 @@ package forum.model;
 import java.sql.Timestamp;
 
 /**
- * One row from {@code threads} with author display name.
+ * One row from {@code comments} with author display name.
  */
-public class ThreadInfo extends StorableEntity {
+public class CommentInfo extends StorableEntity {
 
-    private final String title;
+    private final Long parentCommentId;
     private final String content;
     private final String authorUsername;
     private final Timestamp dateCreated;
@@ -16,19 +16,19 @@ public class ThreadInfo extends StorableEntity {
     private final Long authorAvatarAccessoryId;
 
     /**
-     * @param id threadID
-     * @param title thread title
-     * @param content thread body text
-     * @param authorUsername post author's username
-     * @param dateCreated post creation time
-     * @param authorAvatarHeadpieceId selected headpiece id for author (nullable)
-     * @param authorAvatarClothingId selected clothing id for author (nullable)
-     * @param authorAvatarAccessoryId selected accessory id for author (nullable)
+     * @param id              commentID
+     * @param parentCommentId parent comment when this is a reply; {@code null} for top-level
+     * @param content         comment body
+     * @param authorUsername  author username
+     * @param dateCreated     creation time
+     * @param authorAvatarHeadpieceId selected headpiece id for the author (nullable)
+     * @param authorAvatarClothingId selected clothing id for the author (nullable)
+     * @param authorAvatarAccessoryId selected accessory id for the author (nullable)
      */
-    public ThreadInfo(long id, String title, String content, String authorUsername, Timestamp dateCreated,
-            Long authorAvatarHeadpieceId, Long authorAvatarClothingId, Long authorAvatarAccessoryId) {
+    public CommentInfo(long id, Long parentCommentId, String content, String authorUsername,
+            Timestamp dateCreated, Long authorAvatarHeadpieceId, Long authorAvatarClothingId, Long authorAvatarAccessoryId) {
         super(id);
-        this.title = title == null ? "" : title;
+        this.parentCommentId = parentCommentId;
         this.content = content == null ? "" : content;
         this.authorUsername = authorUsername == null ? "" : authorUsername;
         this.dateCreated = dateCreated;
@@ -38,14 +38,14 @@ public class ThreadInfo extends StorableEntity {
     }
 
     /**
-     * @return thread title
+     * @return parent comment id for replies, or {@code null} for top-level
      */
-    public String getTitle() {
-        return title;
+    public Long getParentCommentId() {
+        return parentCommentId;
     }
 
     /**
-     * @return thread body content
+     * @return comment body
      */
     public String getContent() {
         return content;
@@ -76,10 +76,4 @@ public class ThreadInfo extends StorableEntity {
     public Long getAuthorAvatarAccessoryId() {
         return authorAvatarAccessoryId;
     }
-
-    @Override
-    public String toString() {
-        return title + " - by " + authorUsername;
-    }
 }
-
