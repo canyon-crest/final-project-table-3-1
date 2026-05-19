@@ -9,6 +9,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import forum.AppPaths;
 import forum.ai.AiConfig;
 import forum.ai.AiOrchestrator;
 import forum.ai.AiProvider;
@@ -41,6 +42,9 @@ public class ForumService {
     private Long aiBotUserId;
     public static final String AI_BOT_USERNAME = "kimi_bot";
     private static final String AI_PENDING_MESSAGE = "[AI] ...";
+    private static final int XP_CREATE_POST = 20;
+    private static final int XP_CREATE_COMMENT = 8;
+    private static final int XP_RECEIVE_LIKE = 2;
     private String lastUserMessage;
 
     /**
@@ -57,7 +61,8 @@ public class ForumService {
         this.categories = categories;
         this.threads = threads;
         this.comments = comments;
-        this.aiConfig = AiConfig.loadFromFile(new File("forum.properties"));
+        File configFile = AppPaths.resolveForumPropertiesFile();
+        this.aiConfig = AiConfig.loadFromFile(configFile);
         AiProvider provider = "nim".equalsIgnoreCase(aiConfig.getProvider())
                 ? new NimProvider()
                 : new KimiProvider(aiConfig);
@@ -78,6 +83,8 @@ public class ForumService {
 
     /**
      * Returns and clears the last user-facing message from service operations.
+     *
+     * @return last message shown to users, then clears it from memory
      */
     public String consumeLastUserMessage() {
         String msg = lastUserMessage;
@@ -85,6 +92,12 @@ public class ForumService {
         return msg;
     }
 
+    /**
+     * Helper used by UI/avatar rendering to detect the special AI bot account.
+     *
+     * @param username username to test
+     * @return true when username matches {@link #AI_BOT_USERNAME}
+     */
     public boolean isAiBotUsername(String username) {
         return username != null && AI_BOT_USERNAME.equalsIgnoreCase(username.trim());
     }
@@ -161,23 +174,51 @@ public class ForumService {
         boolean updated = users.updateUsername(current.getId(), normalized);
         if (updated) {
             session.setCurrentUser(new ForumUser(current.getId(), normalized, current.getPasswordHash(),
-                    current.getAvatarHeadpieceId(), current.getAvatarClothingId(), current.getAvatarAccessoryId()));
+                    current.getAvatarHeadpieceId(), current.getAvatarClothingId(), current.getAvatarAccessoryId(),
+                    current.getXpTotal(), current.getLevel()));
         }
         return updated;
     }
 
+    /**
+     * Loads active headpiece choices for the profile editor.
+     *
+     * @return list of headpiece options
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> loadHeadpieces() throws SQLException {
         return users.findAllHeadpieces();
     }
 
+    /**
+     * Loads active clothing choices for the profile editor.
+     *
+     * @return list of clothing options
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> loadClothing() throws SQLException {
         return users.findAllClothing();
     }
 
+    /**
+     * Loads active accessory choices for the profile editor.
+     *
+     * @return list of accessory options
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> loadAccessories() throws SQLException {
         return users.findAllAccessories();
     }
 
+    /**
+     * Updates the logged-in user's avatar part selections.
+     *
+     * @param headpieceId selected headpiece id, or null
+     * @param clothingId selected clothing id, or null
+     * @param accessoryId selected accessory id, or null
+     * @return true if selection saved successfully
+     * @throws SQLException on database errors
+     */
     public boolean updateCurrentAvatarSelection(Long headpieceId, Long clothingId, Long accessoryId) throws SQLException {
         if (!session.isLoggedIn()) {
             return false;
@@ -191,7 +232,9 @@ public class ForumService {
                     current.getPasswordHash(),
                     headpieceId,
                     clothingId,
-                    accessoryId));
+                    accessoryId,
+                    current.getXpTotal(),
+                    current.getLevel()));
         }
         return ok;
     }
@@ -240,7 +283,11 @@ public class ForumService {
         }
         long authorId = session.getCurrentUser().getId();
         long id = threads.insertThread(categoryId, authorId, title.trim(), content.trim());
-        return id > 0;
+        if (id > 0) {
+            grantXpToUser(authorId, XP_CREATE_POST);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -291,7 +338,57 @@ public class ForumService {
         }
         long authorId = session.getCurrentUser().getId();
         long id = comments.insertComment(threadId, authorId, parentCommentId, trimmed);
-        return id > 0;
+        if (id > 0) {
+            grantXpToUser(authorId, XP_CREATE_COMMENT);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Applies a like/dislike toggle on a thread for the logged-in user.
+     *
+     * @param threadId target thread
+     * @param like true for like, false for dislike
+     * @return true if the request was processed
+     * @throws SQLException on database errors
+     */
+    public boolean reactToThread(long threadId, boolean like) throws SQLException {
+        if (!session.isLoggedIn()) {
+            return false;
+        }
+        long voterId = session.getCurrentUser().getId();
+        int reactionState = threads.setReaction(threadId, voterId, like ? 1 : -1);
+        if (reactionState == 1) {
+            long authorId = threads.findAuthorId(threadId);
+            if (authorId > 0L && authorId != voterId) {
+                grantXpToUser(authorId, XP_RECEIVE_LIKE);
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Applies a like/dislike toggle on a comment for the logged-in user.
+     *
+     * @param commentId target comment
+     * @param like true for like, false for dislike
+     * @return true if the request was processed
+     * @throws SQLException on database errors
+     */
+    public boolean reactToComment(long commentId, boolean like) throws SQLException {
+        if (!session.isLoggedIn()) {
+            return false;
+        }
+        long voterId = session.getCurrentUser().getId();
+        int reactionState = comments.setReaction(commentId, voterId, like ? 1 : -1);
+        if (reactionState == 1) {
+            long authorId = comments.findAuthorId(commentId);
+            if (authorId > 0L && authorId != voterId) {
+                grantXpToUser(authorId, XP_RECEIVE_LIKE);
+            }
+        }
+        return true;
     }
 
     private boolean handleAiCommand(long threadId, Long parentCommentId, String rawCommand) throws SQLException {
@@ -313,6 +410,7 @@ public class ForumService {
             lastUserMessage = "Could not add comment.";
             return false;
         }
+        grantXpToUser(authorId, XP_CREATE_COMMENT);
         long botId = ensureAiBotUserId();
         if (botId <= 0L) {
             return true;
@@ -334,7 +432,7 @@ public class ForumService {
             List<CommentInfo> allComments = comments.findByThreadId(threadId);
             recent = extractRecentCommentContext(allComments, aiConfig.getMaxContextComments());
         } else {
-            // Keep non-summary /ai prompts isolated from older thread chatter.
+            // For normal /ai prompts, do not include old comments.
             recent = List.of();
         }
         int adaptiveOutputTokens = computeAdaptiveOutputTokenBudget(userPrompt, summarize, recent.size());
@@ -394,7 +492,7 @@ public class ForumService {
         int budget = configured;
         String lower = userPrompt == null ? "" : userPrompt.toLowerCase();
 
-        // Verbose asks are more likely to hit hard limits; trim the budget and rely on concise instructions.
+        // If the prompt asks for a long answer, lower the token budget to avoid cutoffs.
         if (lower.contains("story") || lower.contains("detailed") || lower.contains("exactly")
                 || lower.contains("example") || lower.contains("step by step")) {
             budget -= 40;
@@ -433,7 +531,7 @@ public class ForumService {
         try {
             comments.updateCommentContent(pendingAiCommentId, finalText);
         } catch (SQLException ignored) {
-            // If update fails, leave placeholder as-is.
+            // If this fails, keep the temporary AI comment text.
         }
     }
 
@@ -455,10 +553,29 @@ public class ForumService {
         return -1L;
     }
 
+    private void grantXpToUser(long userId, int delta) {
+        if (delta <= 0 || userId <= 0L) {
+            return;
+        }
+        try {
+            users.addXp(userId, delta);
+            refreshSessionUserIfNeeded(userId);
+        } catch (SQLException ignored) {
+            // XP is a bonus system; do not fail the main action when XP update fails.
+        }
+    }
+
+    private void refreshSessionUserIfNeeded(long userId) throws SQLException {
+        if (!session.isLoggedIn() || session.getCurrentUser().getId() != userId) {
+            return;
+        }
+        users.findById(userId).ifPresent(session::setCurrentUser);
+    }
+
     /**
-     * In-place selection sort — demonstrates explicit algorithmic steps for the project rubric.
-     * AP CSA Note: This is a classic selection sort algorithm.
-     * It finds the minimum element in the unsorted portion and swaps it to the front.
+     * In-place selection sort.
+     * This is a classic algorithm: find the smallest item in the unsorted part
+     * and swap it to the front.
      *
      * @param list categories to reorder
      */

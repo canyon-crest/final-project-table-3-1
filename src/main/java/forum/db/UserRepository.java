@@ -74,7 +74,8 @@ public class UserRepository extends RepositoryBase {
      * @throws SQLException on database errors
      */
     public Optional<ForumUser> findByUsername(String username) throws SQLException {
-        final String sql = "SELECT userID, username, password, avatar_headpiece_id, avatar_clothing_id, avatar_accessory_id "
+        final String sql = "SELECT userID, username, password, avatar_headpiece_id, avatar_clothing_id, avatar_accessory_id, "
+                + "COALESCE(xp_total, 0) AS xp_total, COALESCE(level, 1) AS level "
                 + "FROM `user` WHERE username = ?";
         try (Connection c = openConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, username);
@@ -82,13 +83,29 @@ public class UserRepository extends RepositoryBase {
                 if (!rs.next()) {
                     return Optional.empty();
                 }
-                long id = rs.getLong("userID");
-                String name = rs.getString("username");
-                String hash = rs.getString("password");
-                Long headpiece = (Long) rs.getObject("avatar_headpiece_id", Long.class);
-                Long clothing = (Long) rs.getObject("avatar_clothing_id", Long.class);
-                Long accessory = (Long) rs.getObject("avatar_accessory_id", Long.class);
-                return Optional.of(new ForumUser(id, name, hash, headpiece, clothing, accessory));
+                return Optional.of(mapForumUser(rs));
+            }
+        }
+    }
+
+    /**
+     * Loads one user by id.
+     *
+     * @param userId target user id
+     * @return matching user row if found
+     * @throws SQLException on database errors
+     */
+    public Optional<ForumUser> findById(long userId) throws SQLException {
+        final String sql = "SELECT userID, username, password, avatar_headpiece_id, avatar_clothing_id, avatar_accessory_id, "
+                + "COALESCE(xp_total, 0) AS xp_total, COALESCE(level, 1) AS level "
+                + "FROM `user` WHERE userID = ?";
+        try (Connection c = openConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(mapForumUser(rs));
             }
         }
     }
@@ -111,13 +128,8 @@ public class UserRepository extends RepositoryBase {
             if (n == 0) {
                 return -1;
             }
-            try (ResultSet keys = ps.getGeneratedKeys()) {
-                if (keys.next()) {
-                    return keys.getLong(1);
-                }
-            }
+            return readInsertedRowId(c, ps);
         }
-        return -1;
     }
 
     /**
@@ -148,6 +160,16 @@ public class UserRepository extends RepositoryBase {
         }
     }
 
+    /**
+     * Saves avatar part selections for a specific user.
+     *
+     * @param userId target user id
+     * @param headpieceId selected headpiece id, or null
+     * @param clothingId selected clothing id, or null
+     * @param accessoryId selected accessory id, or null
+     * @return true if exactly one row was updated
+     * @throws SQLException on database errors
+     */
     public boolean updateAvatarSelection(long userId, Long headpieceId, Long clothingId, Long accessoryId) throws SQLException {
         final String sql = "UPDATE `user` "
                 + "SET avatar_headpiece_id = ?, avatar_clothing_id = ?, avatar_accessory_id = ? "
@@ -173,14 +195,50 @@ public class UserRepository extends RepositoryBase {
         }
     }
 
+    /**
+     * Adds XP to a user and recomputes level as {@code floor(xp_total / 100) + 1}.
+     *
+     * @param userId target user id
+     * @param deltaXp XP increase (ignored when <= 0)
+     * @return true if one row was updated
+     * @throws SQLException on database errors
+     */
+    public boolean addXp(long userId, int deltaXp) throws SQLException {
+        if (deltaXp <= 0) {
+            return false;
+        }
+        final String sql = "UPDATE `user` "
+                + "SET xp_total = GREATEST(0, COALESCE(xp_total, 0) + ?), "
+                + "level = GREATEST(1, FLOOR(GREATEST(0, COALESCE(xp_total, 0) + ?) / 100) + 1) "
+                + "WHERE userID = ?";
+        try (Connection c = openConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, deltaXp);
+            ps.setInt(2, deltaXp);
+            ps.setLong(3, userId);
+            return ps.executeUpdate() == 1;
+        }
+    }
+
+    /**
+     * @return active headpiece options ordered for UI display
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> findAllHeadpieces() throws SQLException {
         return findAllAvatarOptions("avatar_headpiece", "headpiece_id");
     }
 
+    /**
+     * @return active clothing options ordered for UI display
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> findAllClothing() throws SQLException {
         return findAllAvatarOptions("avatar_clothing", "clothing_id");
     }
 
+    /**
+     * @return active accessory options ordered for UI display
+     * @throws SQLException on database errors
+     */
     public List<AvatarOption> findAllAccessories() throws SQLException {
         return findAllAvatarOptions("avatar_accessory", "accessory_id");
     }
@@ -197,14 +255,19 @@ public class UserRepository extends RepositoryBase {
                 return new ArrayList<>();
             }
             boolean hasCode = hasColumn(c, table, "code");
+            String unlockCol = hasUnlockLevel
+                    ? resolveFirstExistingColumn(c, table, "unlock_level", "unlockLevel")
+                    : null;
             String codeSelect = hasCode ? ", code" : "";
-            StringBuilder sql = new StringBuilder("SELECT " + resolvedIdCol + " AS id" + codeSelect + ", " + labelCol + " AS label FROM " + table);
+            String unlockSelect = unlockCol == null ? "" : ", " + unlockCol + " AS unlock_level";
+            StringBuilder sql = new StringBuilder(
+                    "SELECT " + resolvedIdCol + " AS id" + codeSelect + ", " + labelCol + " AS label"
+                            + unlockSelect + " FROM " + table);
             if (hasIsActive) {
                 String activeCol = resolveFirstExistingColumn(c, table, "is_active", "isActive");
                 sql.append(" WHERE ").append(activeCol).append(" = 1");
             }
             if (hasUnlockLevel) {
-                String unlockCol = resolveFirstExistingColumn(c, table, "unlock_level", "unlockLevel");
                 sql.append(" ORDER BY ").append(unlockCol).append(" ASC, label ASC");
             } else {
                 sql.append(" ORDER BY label ASC");
@@ -213,17 +276,29 @@ public class UserRepository extends RepositoryBase {
                 List<AvatarOption> out = new ArrayList<>();
                 while (rs.next()) {
                     String code = hasCode ? rs.getString("code") : "";
-                    out.add(new AvatarOption(rs.getLong("id"), code, rs.getString("label")));
+                    int unlockLevel = unlockCol == null ? 0 : rs.getInt("unlock_level");
+                    out.add(new AvatarOption(rs.getLong("id"), code, rs.getString("label"), unlockLevel));
                 }
                 return out;
             }
         }
     }
 
+    private static ForumUser mapForumUser(ResultSet rs) throws SQLException {
+        long id = rs.getLong("userID");
+        String name = rs.getString("username");
+        String hash = rs.getString("password");
+        Long headpiece = (Long) rs.getObject("avatar_headpiece_id", Long.class);
+        Long clothing = (Long) rs.getObject("avatar_clothing_id", Long.class);
+        Long accessory = (Long) rs.getObject("avatar_accessory_id", Long.class);
+        int xpTotal = rs.getInt("xp_total");
+        int level = rs.getInt("level");
+        return new ForumUser(id, name, hash, headpiece, clothing, accessory, xpTotal, level);
+    }
+
     // ========================================================================
-    // AP CSA Note: The following methods are helper functions for dynamic database columns.
-    // They are completely beyond the AP CSA subset and are only used here
-    // to handle database migrations automatically without crashing the app.
+    // These helper methods check which DB columns exist.
+    // They let this code work with slightly different table versions.
     // ========================================================================
 
     private static boolean hasColumn(Connection c, String table, String column) throws SQLException {

@@ -14,6 +14,8 @@ public class ThreadInfo extends StorableEntity {
     private final Long authorAvatarHeadpieceId;
     private final Long authorAvatarClothingId;
     private final Long authorAvatarAccessoryId;
+    private final int likeCount;
+    private final int dislikeCount;
 
     /**
      * @param id threadID
@@ -27,6 +29,13 @@ public class ThreadInfo extends StorableEntity {
      */
     public ThreadInfo(long id, String title, String content, String authorUsername, Timestamp dateCreated,
             Long authorAvatarHeadpieceId, Long authorAvatarClothingId, Long authorAvatarAccessoryId) {
+        this(id, title, content, authorUsername, dateCreated,
+                authorAvatarHeadpieceId, authorAvatarClothingId, authorAvatarAccessoryId, 0, 0);
+    }
+
+    public ThreadInfo(long id, String title, String content, String authorUsername, Timestamp dateCreated,
+            Long authorAvatarHeadpieceId, Long authorAvatarClothingId, Long authorAvatarAccessoryId,
+            int likeCount, int dislikeCount) {
         super(id);
         this.title = title == null ? "" : title;
         this.content = content == null ? "" : content;
@@ -35,6 +44,8 @@ public class ThreadInfo extends StorableEntity {
         this.authorAvatarHeadpieceId = authorAvatarHeadpieceId;
         this.authorAvatarClothingId = authorAvatarClothingId;
         this.authorAvatarAccessoryId = authorAvatarAccessoryId;
+        this.likeCount = Math.max(0, likeCount);
+        this.dislikeCount = Math.max(0, dislikeCount);
     }
 
     /**
@@ -75,6 +86,14 @@ public class ThreadInfo extends StorableEntity {
 
     public Long getAuthorAvatarAccessoryId() {
         return authorAvatarAccessoryId;
+    }
+
+    public int getLikeCount() {
+        return likeCount;
+    }
+
+    public int getDislikeCount() {
+        return dislikeCount;
     }
 
     @Override

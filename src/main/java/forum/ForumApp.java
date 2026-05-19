@@ -33,15 +33,8 @@ public final class ForumApp {
     public static void main(String[] args) {
         installLookAndFeel();
 
-        File props = new File("forum.properties");
-        if (!props.isFile()) {
-            JOptionPane.showMessageDialog(null,
-                    "Missing forum.properties in the working folder.\n"
-                            + "Copy forum.properties.example, rename to forum.properties, "
-                            + "and fill in your TiDB JDBC settings.",
-                    "CCA Forum",
-                    JOptionPane.WARNING_MESSAGE);
-        } else {
+        File props = AppPaths.resolveForumPropertiesFile();
+        if (props != null) {
             try {
                 ConnectionManager.loadFromFile(props);
             } catch (IOException ex) {
@@ -50,6 +43,13 @@ public final class ForumApp {
                         "CCA Forum",
                         JOptionPane.ERROR_MESSAGE);
             }
+        } else if (!ConnectionManager.loadFromEnvironment()) {
+            JOptionPane.showMessageDialog(null,
+                    "Missing forum.properties.\n"
+                            + "Place forum.properties next to the app EXE/JAR (or working folder),\n"
+                            + "or set FORUM_DB_URL, FORUM_DB_USER, FORUM_DB_PASSWORD.",
+                    "CCA Forum",
+                    JOptionPane.WARNING_MESSAGE);
         }
 
         SwingUtilities.invokeLater(() -> {

@@ -4,7 +4,10 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+
 import java.awt.FlowLayout;
+
+import javax.swing.JComponent;
 import java.awt.Font;
 
 import javax.swing.BorderFactory;
@@ -25,6 +28,9 @@ public class PostDetailPage extends JPanel {
     private final JLabel postTitleLabel = new JLabel("Post");
     private final JLabel postMetaLabel = new JLabel(" ");
     private final JLabel postAuthorAvatarLabel = new JLabel();
+    private final JLabel postVotesLabel = new JLabel("Likes: 0  Dislikes: 0");
+    private final JButton postLikeButton = new JButton("Like");
+    private final JButton postDislikeButton = new JButton("Dislike");
     private final JTextArea postBodyArea = new JTextArea(8, 42);
     private final JPanel commentsListPanel = new JPanel();
     private final JTextArea newCommentArea = new JTextArea(3, 36);
@@ -43,7 +49,11 @@ public class PostDetailPage extends JPanel {
 
         postTitleLabel.setFont(postTitleLabel.getFont().deriveFont(Font.BOLD, 22f));
         postTitleLabel.setForeground(headingText);
+        postTitleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        lockVerticalGrowth(postTitleLabel);
         postMetaLabel.setForeground(mutedText);
+        postMetaLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+        lockVerticalGrowth(postMetaLabel);
 
         postBodyArea.setEditable(false);
         postBodyArea.setLineWrap(true);
@@ -73,27 +83,33 @@ public class PostDetailPage extends JPanel {
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.setBackground(appBackground);
 
-        JPanel header = new JPanel();
-        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
-        header.setBackground(appBackground);
-        header.setAlignmentX(Component.LEFT_ALIGNMENT);
         postAuthorAvatarLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
         postAuthorAvatarLabel.setBorder(BorderFactory.createEmptyBorder(2, 0, 2, 0));
-        header.add(postTitleLabel);
-        header.add(Box.createVerticalStrut(4));
-        header.add(postMetaLabel);
-        header.add(Box.createVerticalStrut(4));
-        header.add(postAuthorAvatarLabel);
+        lockVerticalGrowth(postAuthorAvatarLabel);
+        JPanel postReactionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        postReactionRow.setOpaque(false);
+        postReactionRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        postReactionRow.add(postVotesLabel);
+        postReactionRow.add(postLikeButton);
+        postReactionRow.add(postDislikeButton);
 
         JScrollPane postBodyScroll = new JScrollPane(postBodyArea);
         postBodyScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
         postBodyScroll.setPreferredSize(new Dimension(760, 210));
         postBodyScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 260));
 
-        content.add(header);
+        // Add header widgets directly so no wrapper panel stretches in BoxLayout.
+        content.add(postTitleLabel);
+        content.add(Box.createVerticalStrut(4));
+        content.add(postMetaLabel);
+        content.add(Box.createVerticalStrut(4));
+        content.add(postAuthorAvatarLabel);
+        content.add(Box.createVerticalStrut(4));
+        content.add(postReactionRow);
         content.add(Box.createVerticalStrut(10));
         content.add(postBodyScroll);
         content.add(Box.createVerticalStrut(10));
+        lockVerticalGrowth(commentsListPanel);
         content.add(commentsListPanel);
 
         pageScroll = new JScrollPane(content);
@@ -144,6 +160,18 @@ public class PostDetailPage extends JPanel {
         return postAuthorAvatarLabel;
     }
 
+    public JLabel getPostVotesLabel() {
+        return postVotesLabel;
+    }
+
+    public JButton getPostLikeButton() {
+        return postLikeButton;
+    }
+
+    public JButton getPostDislikeButton() {
+        return postDislikeButton;
+    }
+
     public JTextArea getPostBodyArea() {
         return postBodyArea;
     }
@@ -182,5 +210,43 @@ public class PostDetailPage extends JPanel {
 
     public JScrollPane getComposerScroll() {
         return composerScroll;
+    }
+
+    /**
+     * Prevents a BoxLayout child from absorbing extra vertical space.
+     */
+    static void lockVerticalGrowth(JComponent component) {
+        component.setAlignmentX(Component.LEFT_ALIGNMENT);
+        if (component.getPreferredSize().height <= 0) {
+            component.validate();
+        }
+        int height = component.getPreferredSize().height;
+        if (height <= 0) {
+            height = component.getMinimumSize().height;
+        }
+        component.setMaximumSize(new Dimension(Integer.MAX_VALUE, Math.max(height, 1)));
+    }
+
+    /**
+     * Recompute max heights after title/avatar/comments change.
+     */
+    public void refreshLayoutSizes() {
+        lockVerticalGrowth(postTitleLabel);
+        lockVerticalGrowth(postMetaLabel);
+        lockVerticalGrowth(postAuthorAvatarLabel);
+        JPanel reactionRow = (JPanel) postLikeButton.getParent();
+        reactionRow.validate();
+        lockVerticalGrowth(reactionRow);
+        commentsListPanel.validate();
+        lockVerticalGrowth(commentsListPanel);
+        revalidate();
+        repaint();
+    }
+
+    /**
+     * Recompute max height after dynamic children are added (e.g. comment cards).
+     */
+    public void refreshCommentsPanelHeight() {
+        refreshLayoutSizes();
     }
 }

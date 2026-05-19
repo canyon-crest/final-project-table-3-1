@@ -144,3 +144,45 @@ ALTER TABLE `user`
   ADD CONSTRAINT `fk_user_avatar_accessory`
     FOREIGN KEY (`avatar_accessory_id`) REFERENCES `avatar_accessory` (`accessory_id`)
     ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- 6) Gamification columns on users.
+ALTER TABLE `user`
+  ADD COLUMN `xp_total` INT NOT NULL DEFAULT 0,
+  ADD COLUMN `level` INT NOT NULL DEFAULT 1;
+
+UPDATE `user`
+SET `xp_total` = IFNULL(`xp_total`, 0),
+    `level` = GREATEST(1, FLOOR(IFNULL(`xp_total`, 0) / 100) + 1);
+
+-- 7) Like/dislike tables.
+CREATE TABLE IF NOT EXISTS `thread_reaction` (
+  `threadID` INT UNSIGNED NOT NULL,
+  `userID` INT UNSIGNED NOT NULL,
+  `reaction` TINYINT NOT NULL COMMENT '1 = like, -1 = dislike',
+  `dateCreated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `dateUpdated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`threadID`, `userID`),
+  KEY `idx_thread_reaction_user` (`userID`),
+  CONSTRAINT `fk_thread_reaction_thread`
+    FOREIGN KEY (`threadID`) REFERENCES `threads` (`threadID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_thread_reaction_user`
+    FOREIGN KEY (`userID`) REFERENCES `user` (`userID`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `comment_reaction` (
+  `commentID` INT UNSIGNED NOT NULL,
+  `userID` INT UNSIGNED NOT NULL,
+  `reaction` TINYINT NOT NULL COMMENT '1 = like, -1 = dislike',
+  `dateCreated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `dateUpdated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`commentID`, `userID`),
+  KEY `idx_comment_reaction_user` (`userID`),
+  CONSTRAINT `fk_comment_reaction_comment`
+    FOREIGN KEY (`commentID`) REFERENCES `comments` (`commentID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_comment_reaction_user`
+    FOREIGN KEY (`userID`) REFERENCES `user` (`userID`)
+    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

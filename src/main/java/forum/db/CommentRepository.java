@@ -30,10 +30,15 @@ public class CommentRepository extends RepositoryBase {
     public List<CommentInfo> findByThreadId(long threadId) throws SQLException {
         final String sql = """
                 SELECT c.commentID, c.parentCommentID, c.content, c.dateCreated, u.username,
-                       u.avatar_headpiece_id, u.avatar_clothing_id, u.avatar_accessory_id
+                       u.avatar_headpiece_id, u.avatar_clothing_id, u.avatar_accessory_id,
+                       COALESCE(SUM(CASE WHEN cr.reaction = 1 THEN 1 ELSE 0 END), 0) AS like_count,
+                       COALESCE(SUM(CASE WHEN cr.reaction = -1 THEN 1 ELSE 0 END), 0) AS dislike_count
                 FROM comments c
                 JOIN `user` u ON u.userID = c.authorID
+                LEFT JOIN comment_reaction cr ON cr.commentID = c.commentID
                 WHERE c.threadID = ?
+                GROUP BY c.commentID, c.parentCommentID, c.content, c.dateCreated, u.username,
+                         u.avatar_headpiece_id, u.avatar_clothing_id, u.avatar_accessory_id
                 ORDER BY c.dateCreated ASC, c.commentID ASC
                 """;
         List<CommentInfo> list = new ArrayList<>();
@@ -50,12 +55,83 @@ public class CommentRepository extends RepositoryBase {
                     Long authorHeadpiece = (Long) rs.getObject("avatar_headpiece_id", Long.class);
                     Long authorClothing = (Long) rs.getObject("avatar_clothing_id", Long.class);
                     Long authorAccessory = (Long) rs.getObject("avatar_accessory_id", Long.class);
+                    int likes = rs.getInt("like_count");
+                    int dislikes = rs.getInt("dislike_count");
                     list.add(new CommentInfo(id, parent, body, author, created,
-                            authorHeadpiece, authorClothing, authorAccessory));
+                            authorHeadpiece, authorClothing, authorAccessory, likes, dislikes));
                 }
             }
         }
         return list;
+    }
+
+    public long findAuthorId(long commentId) throws SQLException {
+        final String sql = "SELECT authorID FROM comments WHERE commentID = ?";
+        try (Connection c = openConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setLong(1, commentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getLong(1);
+                }
+            }
+        }
+        return -1L;
+    }
+
+    /**
+     * Toggles/upserts one user's reaction on a comment.
+     * Same reaction twice removes the reaction.
+     *
+     * @param commentId comment id
+     * @param userId reacting user id
+     * @param reaction 1 for like, -1 for dislike
+     * @return resulting reaction state (1 like, -1 dislike, 0 no reaction)
+     * @throws SQLException on database errors
+     */
+    public int setReaction(long commentId, long userId, int reaction) throws SQLException {
+        if (reaction != 1 && reaction != -1) {
+            return 0;
+        }
+        final String selectSql = "SELECT reaction FROM comment_reaction WHERE commentID = ? AND userID = ?";
+        try (Connection c = openConnection()) {
+            Integer existing = null;
+            try (PreparedStatement ps = c.prepareStatement(selectSql)) {
+                ps.setLong(1, commentId);
+                ps.setLong(2, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        existing = Integer.valueOf(rs.getInt(1));
+                    }
+                }
+            }
+            if (existing != null && existing.intValue() == reaction) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM comment_reaction WHERE commentID = ? AND userID = ?")) {
+                    ps.setLong(1, commentId);
+                    ps.setLong(2, userId);
+                    ps.executeUpdate();
+                    return 0;
+                }
+            }
+            if (existing == null) {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "INSERT INTO comment_reaction (commentID, userID, reaction) VALUES (?, ?, ?)")) {
+                    ps.setLong(1, commentId);
+                    ps.setLong(2, userId);
+                    ps.setInt(3, reaction);
+                    ps.executeUpdate();
+                    return reaction;
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE comment_reaction SET reaction = ?, dateUpdated = CURRENT_TIMESTAMP WHERE commentID = ? AND userID = ?")) {
+                ps.setInt(1, reaction);
+                ps.setLong(2, commentId);
+                ps.setLong(3, userId);
+                ps.executeUpdate();
+                return reaction;
+            }
+        }
     }
 
     /**
@@ -85,13 +161,8 @@ public class CommentRepository extends RepositoryBase {
             if (n == 0) {
                 return -1;
             }
-            try (ResultSet keys = ps.getGeneratedKeys()) {
-                if (keys.next()) {
-                    return keys.getLong(1);
-                }
-            }
+            return readInsertedRowId(c, ps);
         }
-        return -1;
     }
 
     /**

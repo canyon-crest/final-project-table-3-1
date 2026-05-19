@@ -10,6 +10,8 @@ public class ForumUser extends StorableEntity {
     private final Long avatarHeadpieceId;
     private final Long avatarClothingId;
     private final Long avatarAccessoryId;
+    private final int xpTotal;
+    private final int level;
 
     /**
      * @param id           userID from {@code user}
@@ -17,7 +19,7 @@ public class ForumUser extends StorableEntity {
      * @param passwordHash bcrypt hash from the database
      */
     public ForumUser(long id, String username, String passwordHash) {
-        this(id, username, passwordHash, null, null, null);
+        this(id, username, passwordHash, null, null, null, 0, 1);
     }
 
     /**
@@ -30,12 +32,20 @@ public class ForumUser extends StorableEntity {
      */
     public ForumUser(long id, String username, String passwordHash,
             Long avatarHeadpieceId, Long avatarClothingId, Long avatarAccessoryId) {
+        this(id, username, passwordHash, avatarHeadpieceId, avatarClothingId, avatarAccessoryId, 0, 1);
+    }
+
+    public ForumUser(long id, String username, String passwordHash,
+            Long avatarHeadpieceId, Long avatarClothingId, Long avatarAccessoryId,
+            int xpTotal, int level) {
         super(id);
         this.username = username;
         this.passwordHash = passwordHash;
         this.avatarHeadpieceId = avatarHeadpieceId;
         this.avatarClothingId = avatarClothingId;
         this.avatarAccessoryId = avatarAccessoryId;
+        this.xpTotal = Math.max(0, xpTotal);
+        this.level = Math.max(1, level);
     }
 
     /**
@@ -62,6 +72,14 @@ public class ForumUser extends StorableEntity {
 
     public Long getAvatarAccessoryId() {
         return avatarAccessoryId;
+    }
+
+    public int getXpTotal() {
+        return xpTotal;
+    }
+
+    public int getLevel() {
+        return level;
     }
 
     /**

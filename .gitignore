@@ -18,6 +18,12 @@ target/
 dist/
 forum.properties
 
+# Packaging artifacts (keep only the build script tracked)
+*.exe
+*.msi
+*.app-image
+!scripts/package-exe.bat
+
 # Eclipse (optional — uncomment if you use Eclipse without Maven import)
 # .classpath
 # .project

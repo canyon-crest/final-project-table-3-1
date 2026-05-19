@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS `user` (
   `userID` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `username` VARCHAR(50) NOT NULL,
   `password` VARCHAR(255) NOT NULL COMMENT 'bcrypt or other strong hash',
+  `xp_total` INT NOT NULL DEFAULT 0,
+  `level` INT NOT NULL DEFAULT 1,
   `dateCreated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`userID`),
   UNIQUE KEY `uk_user_username` (`username`)
@@ -78,6 +80,42 @@ CREATE TABLE IF NOT EXISTS `comments` (
     ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Reactions on threads: one row per user/thread.
+CREATE TABLE IF NOT EXISTS `thread_reaction` (
+  `threadID` INT UNSIGNED NOT NULL,
+  `userID` INT UNSIGNED NOT NULL,
+  `reaction` TINYINT NOT NULL COMMENT '1 = like, -1 = dislike',
+  `dateCreated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `dateUpdated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`threadID`, `userID`),
+  KEY `idx_thread_reaction_user` (`userID`),
+  CONSTRAINT `fk_thread_reaction_thread`
+    FOREIGN KEY (`threadID`) REFERENCES `threads` (`threadID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_thread_reaction_user`
+    FOREIGN KEY (`userID`) REFERENCES `user` (`userID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `chk_thread_reaction_value` CHECK (`reaction` IN (1, -1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Reactions on comments: one row per user/comment.
+CREATE TABLE IF NOT EXISTS `comment_reaction` (
+  `commentID` INT UNSIGNED NOT NULL,
+  `userID` INT UNSIGNED NOT NULL,
+  `reaction` TINYINT NOT NULL COMMENT '1 = like, -1 = dislike',
+  `dateCreated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `dateUpdated` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`commentID`, `userID`),
+  KEY `idx_comment_reaction_user` (`userID`),
+  CONSTRAINT `fk_comment_reaction_comment`
+    FOREIGN KEY (`commentID`) REFERENCES `comments` (`commentID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `fk_comment_reaction_user`
+    FOREIGN KEY (`userID`) REFERENCES `user` (`userID`)
+    ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT `chk_comment_reaction_value` CHECK (`reaction` IN (1, -1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Avatar part catalogs (preset IDs for layered sprite customization).
 CREATE TABLE IF NOT EXISTS `avatar_headpiece` (
   `headpiece_id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -117,6 +155,8 @@ ALTER TABLE `user`
   ADD COLUMN IF NOT EXISTS `avatar_headpiece_id` INT UNSIGNED NULL,
   ADD COLUMN IF NOT EXISTS `avatar_clothing_id` INT UNSIGNED NULL,
   ADD COLUMN IF NOT EXISTS `avatar_accessory_id` INT UNSIGNED NULL,
+  ADD COLUMN IF NOT EXISTS `xp_total` INT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS `level` INT NOT NULL DEFAULT 1,
   ADD KEY `idx_user_avatar_headpiece` (`avatar_headpiece_id`),
   ADD KEY `idx_user_avatar_clothing` (`avatar_clothing_id`),
   ADD KEY `idx_user_avatar_accessory` (`avatar_accessory_id`);

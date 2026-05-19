@@ -41,6 +41,37 @@ public final class ConnectionManager {
     }
 
     /**
+     * Reads DB settings from environment variables / system properties.
+     * Supports:
+     * - FORUM_DB_URL, FORUM_DB_USER, FORUM_DB_PASSWORD
+     * - DB_URL, DB_USER, DB_PASSWORD
+     * - -Dforum.db.url / -Dforum.db.user / -Dforum.db.password
+     *
+     * @return true if DB settings were resolved
+     */
+    public static boolean loadFromEnvironment() {
+        String url = firstNonBlank(
+                System.getProperty("forum.db.url"),
+                System.getenv("FORUM_DB_URL"),
+                System.getenv("DB_URL"));
+        String user = firstNonBlank(
+                System.getProperty("forum.db.user"),
+                System.getenv("FORUM_DB_USER"),
+                System.getenv("DB_USER"));
+        String password = firstNonBlank(
+                System.getProperty("forum.db.password"),
+                System.getenv("FORUM_DB_PASSWORD"),
+                System.getenv("DB_PASSWORD"));
+        if (url == null || user == null) {
+            return false;
+        }
+        jdbcUrl = url;
+        dbUser = user;
+        dbPassword = password == null ? "" : password;
+        return isConfigured();
+    }
+
+    /**
      * @return true if {@link #loadFromFile(File)} has been called successfully
      */
     public static boolean isConfigured() {
@@ -58,5 +89,20 @@ public final class ConnectionManager {
             throw new SQLException("Database is not configured (missing forum.properties).");
         }
         return DriverManager.getConnection(jdbcUrl, dbUser, dbPassword);
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null) {
+                String trimmed = value.trim();
+                if (!trimmed.isEmpty()) {
+                    return trimmed;
+                }
+            }
+        }
+        return null;
     }
 }

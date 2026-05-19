@@ -16,6 +16,7 @@ import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -58,6 +59,7 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.plaf.basic.BasicButtonUI;
 
+import forum.AppPaths;
 import forum.db.ConnectionManager;
 import forum.model.AvatarOption;
 import forum.model.CategoryInfo;
@@ -121,12 +123,15 @@ public class MainWindow extends JFrame {
     private final JLabel detailPostTitleLabel = postDetailPage.getPostTitleLabel();
     private final JLabel detailPostMetaLabel = postDetailPage.getPostMetaLabel();
     private final JLabel detailPostAuthorAvatarLabel = postDetailPage.getPostAuthorAvatarLabel();
+    private final JLabel detailPostVotesLabel = postDetailPage.getPostVotesLabel();
     private final JTextArea detailPostBodyArea = postDetailPage.getPostBodyArea();
     private final JPanel detailCommentsListPanel = postDetailPage.getCommentsListPanel();
     private final JTextArea detailNewCommentArea = postDetailPage.getNewCommentArea();
     private final JScrollPane detailPageScroll = postDetailPage.getPageScroll();
     private final JButton detailAddCommentButton = postDetailPage.getAddCommentButton();
     private final JButton detailRefreshCommentsButton = postDetailPage.getRefreshCommentsButton();
+    private final JButton detailPostLikeButton = postDetailPage.getPostLikeButton();
+    private final JButton detailPostDislikeButton = postDetailPage.getPostDislikeButton();
     private final CreatePostPage createPostPage = new CreatePostPage(BG_APP, TEXT_MUTED, TEXT_HEADING, SPLIT_BORDER);
     private ThreadInfo selectedPostForDetail;
     private boolean resetDetailScrollToTopPending;
@@ -145,6 +150,10 @@ public class MainWindow extends JFrame {
     private boolean avatarOptionsLoaded;
     private boolean avatarWarmupInProgress;
     private boolean updatingCombos;
+    /** True only after combo boxes match {@link #profileCombosOwnerUserId}. */
+    private boolean profileCombosReady;
+    private long profileCombosOwnerUserId = -1L;
+    private ForumUser pendingProfileComboUser;
     private long postsReloadSequence;
     private int aiPendingAutoRefreshRemaining;
 
@@ -185,10 +194,12 @@ public class MainWindow extends JFrame {
         profileButton.addActionListener(e -> showProfile());
         logoutButton.addActionListener(e -> {
             forumService.getSession().logout();
+            resetProfilePageForUserSwitch();
+            avatarOptionsLoaded = false;
+            pendingProfileComboUser = null;
             updateUiForSession();
             categoryModel.clear();
             postModel.clear();
-            avatarOptionsLoaded = false;
         });
 
         topBar.add(accountButtonPanel, BorderLayout.EAST);
@@ -290,8 +301,18 @@ public class MainWindow extends JFrame {
     }
 
     private BufferedImage loadHomeBannerImage() {
-        File bannerFile = new File(HOME_BANNER_IMAGE_PATH);
-        if (!bannerFile.exists()) {
+        try (InputStream in = MainWindow.class.getResourceAsStream("/" + HOME_BANNER_IMAGE_PATH)) {
+            if (in != null) {
+                BufferedImage bundled = ImageIO.read(in);
+                if (bundled != null) {
+                    return bundled;
+                }
+            }
+        } catch (IOException ignored) {
+            // Fall through to external file lookup.
+        }
+        File bannerFile = AppPaths.resolveAssetFile(HOME_BANNER_IMAGE_PATH);
+        if (bannerFile == null) {
             return null;
         }
         try {
@@ -325,10 +346,14 @@ public class MainWindow extends JFrame {
         detailCancelReplyButton.addActionListener(e -> setReplyTarget(null, null));
         detailCancelReplyButton.setMargin(new Insets(2, 8, 2, 8));
         detailCancelReplyButton.setFocusable(false);
+        detailPostLikeButton.addActionListener(e -> reactToSelectedPost(true));
+        detailPostDislikeButton.addActionListener(e -> reactToSelectedPost(false));
         styleSecondaryButton(postDetailPage.getBackToPostsButton());
         stylePrimaryButton(detailAddCommentButton);
         styleSecondaryButton(detailRefreshCommentsButton);
         styleSecondaryButton(detailCancelReplyButton);
+        stylePrimaryButton(detailPostLikeButton);
+        styleSecondaryButton(detailPostDislikeButton);
         configureGrowingCommentInput(detailNewCommentArea, postDetailPage.getComposerScroll(), 1, 6);
         setReplyTarget(null, null);
     }
@@ -412,11 +437,14 @@ public class MainWindow extends JFrame {
                 JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
                 if (value instanceof ThreadInfo thread) {
                     String createdText = formatTimestamp(thread.getDateCreated());
+                    String votesText = " - Likes: " + thread.getLikeCount() + " Dislikes: " + thread.getDislikeCount();
                     if (createdText.isEmpty()) {
-                        label.setText(thread.getTitle() + " - by " + thread.getAuthorUsername());
+                        label.setText(thread.getTitle() + " - by " + thread.getAuthorUsername() + votesText);
                     } else {
                         label.setText("<html><b>" + escapeHtml(thread.getTitle()) + "</b><br/>by "
-                                + escapeHtml(thread.getAuthorUsername()) + " - " + escapeHtml(createdText) + "</html>");
+                                + escapeHtml(thread.getAuthorUsername()) + " - " + escapeHtml(createdText)
+                                + " - Likes: " + thread.getLikeCount()
+                                + " Dislikes: " + thread.getDislikeCount() + "</html>");
                     }
                 }
                 return label;
@@ -502,6 +530,8 @@ public class MainWindow extends JFrame {
      * Called after a successful login so the header updates immediately.
      */
     public void refreshAfterLogin() {
+        resetProfilePageForUserSwitch();
+        pendingProfileComboUser = null;
         updateUiForSession();
         reloadCategories();
     }
@@ -528,9 +558,8 @@ public class MainWindow extends JFrame {
     }
 
     /**
-     * Loads avatar catalog tables immediately on startup (they are global, not user-specific).
-     * By the time the user logs in and navigates to Profile the cache is already populated,
-     * so the page opens instantly with no greyed-out dropdowns.
+     * Loads avatar option tables at startup.
+     * This helps the Profile page open faster later.
      */
     private void startCatalogWarmupOnStartup() {
         if (avatarOptionsLoaded || avatarWarmupInProgress) {
@@ -563,7 +592,7 @@ public class MainWindow extends JFrame {
                         refreshHeaderForCurrentUser();
                     }
                 } catch (Exception ignored) {
-                    // Will retry lazily when Profile is opened.
+                    // If loading fails now, try again when Profile opens.
                 }
             }
         };
@@ -580,7 +609,7 @@ public class MainWindow extends JFrame {
         }
         avatarWarmupInProgress = true;
         ForumUser currentUser = forumService.getSession().getCurrentUser();
-        // AP CSA Note: SwingWorker runs the background task off the UI thread so the app stays responsive.
+        // SwingWorker runs this in the background so the UI does not freeze.
         SwingWorker<List<List<AvatarOption>>, Void> worker = new SwingWorker<>() {
             @Override
             protected List<List<AvatarOption>> doInBackground() throws Exception {
@@ -608,8 +637,9 @@ public class MainWindow extends JFrame {
                     cachedAccessories = loaded.get(2);
                     avatarOptionsLoaded = true;
                     refreshHeaderForCurrentUser();
+                    finishPendingProfileComboLoad();
                 } catch (Exception ignored) {
-                    // Falls back to lazy load in reloadAvatarCombos on first profile open.
+                    // If this fails, reloadAvatarCombos will try again later.
                 }
             }
         };
@@ -620,8 +650,9 @@ public class MainWindow extends JFrame {
         if (!forumService.getSession().isLoggedIn()) {
             return;
         }
-        // Show the correct saved avatar immediately so the page never flashes a stale picture.
-        profileAvatarLabel.setIcon(buildAvatarIcon(forumService.getSession().getCurrentUser(), 120));
+        ForumUser currentUser = forumService.getSession().getCurrentUser();
+        resetProfileCombosOnly();
+        profileAvatarLabel.setIcon(buildAvatarIcon(currentUser, 120));
         refreshProfileView();
         centerCards.show(centerPanel, CARD_PROFILE);
     }
@@ -632,7 +663,7 @@ public class MainWindow extends JFrame {
         }
         ForumUser u = forumService.getSession().getCurrentUser();
         String username = u.getUsername();
-        profileUsernameLabel.setText("Username: " + username);
+        profileUsernameLabel.setText("Username: " + username + "  \u2022  Level " + u.getLevel() + "  \u2022  XP " + u.getXpTotal());
         profileUsernameField.setText(username);
         reloadAvatarCombos(u);
     }
@@ -658,8 +689,7 @@ public class MainWindow extends JFrame {
                 && !proposedUsername.trim().equals(current.getUsername());
 
         setProfileBusy(true);
-        // AP CSA Note: SwingWorker lets us run database updates without freezing the GUI.
-        // It is an advanced Java concurrency class (an anonymous inner class here) and not tested on the AP exam.
+        // Run DB updates in the background so the GUI does not freeze.
         SwingWorker<String, Void> worker = new SwingWorker<>() {
             @Override
             protected String doInBackground() throws Exception {
@@ -682,8 +712,7 @@ public class MainWindow extends JFrame {
                                 JOptionPane.WARNING_MESSAGE);
                         return;
                     }
-                    // Keep header avatar in sync immediately after a successful profile save.
-                    // This avoids any stale icon if repaint/order timing differs across panels.
+                    // Update the top-bar avatar right after save.
                     accountAvatarLabel.setIcon(profileAvatarLabel.getIcon());
                     refreshHeaderForCurrentUser();
                     centerCards.show(centerPanel, CARD_FORUM);
@@ -708,11 +737,20 @@ public class MainWindow extends JFrame {
     }
 
     private void reloadAvatarCombos(ForumUser u) {
+        profileCombosReady = false;
+        profileCombosOwnerUserId = -1L;
         if (avatarOptionsLoaded) {
             applyAvatarCombos(u);
             return;
         }
-        // Data not ready yet — load in background so the UI never freezes.
+        if (avatarWarmupInProgress) {
+            pendingProfileComboUser = u;
+            profileHeadpieceCombo.setEnabled(false);
+            profileClothingCombo.setEnabled(false);
+            profileAccessoryCombo.setEnabled(false);
+            return;
+        }
+        // Data not ready yet, so load it in the background.
         profileHeadpieceCombo.setEnabled(false);
         profileClothingCombo.setEnabled(false);
         profileAccessoryCombo.setEnabled(false);
@@ -737,14 +775,20 @@ public class MainWindow extends JFrame {
                     cachedClothing = loaded.get(1);
                     cachedAccessories = loaded.get(2);
                     avatarOptionsLoaded = true;
-                    applyAvatarCombos(u);
+                    if (forumService.getSession().isLoggedIn()
+                            && forumService.getSession().getCurrentUser().getId() == u.getId()) {
+                        applyAvatarCombos(u);
+                    }
                 } catch (Exception ex) {
                     avatarOptionsLoaded = false;
-                    profileAvatarLabel.setIcon(buildAvatarIcon(u, 120));
-                    JOptionPane.showMessageDialog(MainWindow.this,
-                            "Avatar options could not be loaded. "
-                                    + "Ensure avatar tables exist (see db_schema.sql).",
-                            "Avatar catalog", JOptionPane.WARNING_MESSAGE);
+                    if (forumService.getSession().isLoggedIn()
+                            && forumService.getSession().getCurrentUser().getId() == u.getId()) {
+                        profileAvatarLabel.setIcon(buildAvatarIcon(u, 120));
+                        JOptionPane.showMessageDialog(MainWindow.this,
+                                "Avatar options could not be loaded. "
+                                        + "Ensure avatar tables exist (see db_schema.sql).",
+                                "Avatar catalog", JOptionPane.WARNING_MESSAGE);
+                    }
                 }
             }
         };
@@ -752,28 +796,81 @@ public class MainWindow extends JFrame {
     }
 
     private void applyAvatarCombos(ForumUser u) {
+        if (!forumService.getSession().isLoggedIn()
+                || forumService.getSession().getCurrentUser().getId() != u.getId()) {
+            return;
+        }
+        List<AvatarOption> allowedHeadpieces = filterUnlockedOptions(cachedHeadpieces, u.getLevel(), u.getAvatarHeadpieceId());
+        List<AvatarOption> allowedClothing = filterUnlockedOptions(cachedClothing, u.getLevel(), u.getAvatarClothingId());
+        List<AvatarOption> allowedAccessories = filterUnlockedOptions(cachedAccessories, u.getLevel(), u.getAvatarAccessoryId());
         updatingCombos = true;
         try {
-            profileHeadpieceCombo.setModel(new DefaultComboBoxModel<>(cachedHeadpieces.toArray(new AvatarOption[0])));
-            profileClothingCombo.setModel(new DefaultComboBoxModel<>(cachedClothing.toArray(new AvatarOption[0])));
-            profileAccessoryCombo.setModel(new DefaultComboBoxModel<>(cachedAccessories.toArray(new AvatarOption[0])));
+            profileHeadpieceCombo.setModel(new DefaultComboBoxModel<>(allowedHeadpieces.toArray(new AvatarOption[0])));
+            profileClothingCombo.setModel(new DefaultComboBoxModel<>(allowedClothing.toArray(new AvatarOption[0])));
+            profileAccessoryCombo.setModel(new DefaultComboBoxModel<>(allowedAccessories.toArray(new AvatarOption[0])));
             selectAvatarOption(profileHeadpieceCombo, u.getAvatarHeadpieceId());
             selectAvatarOption(profileClothingCombo, u.getAvatarClothingId());
             selectAvatarOption(profileAccessoryCombo, u.getAvatarAccessoryId());
         } finally {
             updatingCombos = false;
         }
+        profileCombosOwnerUserId = u.getId();
+        profileCombosReady = true;
+        profileHeadpieceCombo.setEnabled(true);
+        profileClothingCombo.setEnabled(true);
+        profileAccessoryCombo.setEnabled(true);
         refreshProfileAvatarPreview();
+    }
+
+    /**
+     * Clears profile avatar widgets when the logged-in user changes.
+     */
+    private void resetProfilePageForUserSwitch() {
+        pendingProfileComboUser = null;
+        profileCombosReady = false;
+        profileCombosOwnerUserId = -1L;
+        resetProfileCombosOnly();
+        profileAvatarLabel.setIcon(null);
+        profileUsernameLabel.setText(" ");
+        profileUsernameField.setText("");
+    }
+
+    private void resetProfileCombosOnly() {
+        profileCombosReady = false;
+        profileCombosOwnerUserId = -1L;
+        updatingCombos = true;
+        try {
+            profileHeadpieceCombo.setModel(new DefaultComboBoxModel<>());
+            profileClothingCombo.setModel(new DefaultComboBoxModel<>());
+            profileAccessoryCombo.setModel(new DefaultComboBoxModel<>());
+        } finally {
+            updatingCombos = false;
+        }
+    }
+
+    private void finishPendingProfileComboLoad() {
+        if (pendingProfileComboUser == null || !forumService.getSession().isLoggedIn()) {
+            pendingProfileComboUser = null;
+            return;
+        }
+        ForumUser pending = pendingProfileComboUser;
+        pendingProfileComboUser = null;
+        if (forumService.getSession().getCurrentUser().getId() == pending.getId()) {
+            applyAvatarCombos(pending);
+        }
     }
 
     /**
      * Updates the large profile preview from the current combo selection (before or after save).
      */
     private void refreshProfileAvatarPreview() {
-        if (updatingCombos || !forumService.getSession().isLoggedIn()) {
+        if (updatingCombos || !profileCombosReady || !forumService.getSession().isLoggedIn()) {
             return;
         }
         ForumUser base = forumService.getSession().getCurrentUser();
+        if (base.getId() != profileCombosOwnerUserId) {
+            return;
+        }
         AvatarOption head = (AvatarOption) profileHeadpieceCombo.getSelectedItem();
         AvatarOption clothes = (AvatarOption) profileClothingCombo.getSelectedItem();
         AvatarOption acc = (AvatarOption) profileAccessoryCombo.getSelectedItem();
@@ -812,7 +909,7 @@ public class MainWindow extends JFrame {
             return;
         }
         ForumUser u = forumService.getSession().getCurrentUser();
-        statusLabel.setText("Logged in as " + u.getUsername());
+        statusLabel.setText("Logged in as " + u.getUsername() + " (Level " + u.getLevel() + ", XP " + u.getXpTotal() + ")");
         accountAvatarLabel.setIcon(buildAvatarIcon(u, 36));
         accountButtonPanel.revalidate();
         accountButtonPanel.repaint();
@@ -1056,7 +1153,9 @@ public class MainWindow extends JFrame {
                 thread.getAuthorAvatarAccessoryId());
         detailPostAuthorAvatarLabel.setIcon(buildAvatarIcon(postAuthorAvatarUser, 36));
         detailPostBodyArea.setText(thread.getContent());
+        detailPostVotesLabel.setText("Likes: " + thread.getLikeCount() + "  Dislikes: " + thread.getDislikeCount());
         detailPostBodyArea.setCaretPosition(0);
+        postDetailPage.refreshLayoutSizes();
         detailNewCommentArea.setText("");
         setReplyTarget(null, null);
         detailCommentsListPanel.removeAll();
@@ -1202,8 +1301,7 @@ public class MainWindow extends JFrame {
             empty.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
             empty.setAlignmentX(LEFT_ALIGNMENT);
             detailCommentsListPanel.add(empty);
-            detailCommentsListPanel.revalidate();
-            detailCommentsListPanel.repaint();
+            postDetailPage.refreshCommentsPanelHeight();
             return;
         }
         Map<Long, CommentInfo> byId = new HashMap<>();
@@ -1224,15 +1322,13 @@ public class MainWindow extends JFrame {
         for (CommentInfo root : roots) {
             addCommentBranch(root, 0, childrenByParent, rendered);
         }
-        // Safety fallback for any unexpected orphan/cycle records.
+        // Safety check: if any comment was missed, still render it.
         for (CommentInfo c : list) {
             if (!rendered.contains(c.getId())) {
                 addCommentBranch(c, 0, childrenByParent, rendered);
             }
         }
-        detailCommentsListPanel.add(Box.createVerticalGlue());
-        detailCommentsListPanel.revalidate();
-        detailCommentsListPanel.repaint();
+        postDetailPage.refreshCommentsPanelHeight();
     }
 
     private void addCommentBranch(CommentInfo comment, int depth, Map<Long, List<CommentInfo>> childrenByParent,
@@ -1282,11 +1378,26 @@ public class MainWindow extends JFrame {
             setReplyTarget(c.getId(), c.getAuthorUsername());
             detailNewCommentArea.requestFocusInWindow();
         });
+        JButton likeButton = new JButton("Like (" + c.getLikeCount() + ")");
+        likeButton.setMargin(new Insets(2, 8, 2, 8));
+        likeButton.setFocusable(false);
+        stylePrimaryButton(likeButton);
+        likeButton.addActionListener(e -> reactToComment(c.getId(), true));
+        JButton dislikeButton = new JButton("Dislike (" + c.getDislikeCount() + ")");
+        dislikeButton.setMargin(new Insets(2, 8, 2, 8));
+        dislikeButton.setFocusable(false);
+        styleSecondaryButton(dislikeButton);
+        dislikeButton.addActionListener(e -> reactToComment(c.getId(), false));
 
         JPanel metaRow = new JPanel(new BorderLayout(6, 0));
         metaRow.setOpaque(false);
         metaRow.add(meta, BorderLayout.WEST);
-        metaRow.add(replyButton, BorderLayout.EAST);
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        actions.setOpaque(false);
+        actions.add(likeButton);
+        actions.add(dislikeButton);
+        actions.add(replyButton);
+        metaRow.add(actions, BorderLayout.EAST);
 
         // Use a non-editable JTextArea for the body so long text wraps naturally.
         JTextArea body = new JTextArea(c.getContent() == null ? "" : c.getContent().trim());
@@ -1349,5 +1460,82 @@ public class MainWindow extends JFrame {
             return "";
         }
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private static List<AvatarOption> filterUnlockedOptions(List<AvatarOption> source, int level, Long selectedId) {
+        List<AvatarOption> out = new ArrayList<>();
+        long selected = selectedId == null ? -1L : selectedId.longValue();
+        for (AvatarOption opt : source) {
+            if (opt.getUnlockLevel() <= level || opt.getId() == selected) {
+                out.add(opt);
+            }
+        }
+        return out;
+    }
+
+    private void reactToSelectedPost(boolean like) {
+        if (!forumService.getSession().isLoggedIn() || selectedPostForDetail == null) {
+            return;
+        }
+        detailPostLikeButton.setEnabled(false);
+        detailPostDislikeButton.setEnabled(false);
+        long threadId = selectedPostForDetail.getId();
+        SwingWorker<Boolean, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Boolean doInBackground() throws Exception {
+                return forumService.reactToThread(threadId, like);
+            }
+
+            @Override
+            protected void done() {
+                detailPostLikeButton.setEnabled(true);
+                detailPostDislikeButton.setEnabled(true);
+                try {
+                    get();
+                    reloadPostsForSelectedCategory();
+                    CategoryInfo selectedCategory = categoryList.getSelectedValue();
+                    if (selectedPostForDetail != null && selectedCategory != null) {
+                        forumService.loadPostsForCategory(selectedCategory.getId()).stream()
+                                .filter(t -> t.getId() == selectedPostForDetail.getId())
+                                .findFirst()
+                                .ifPresent(t -> {
+                                    selectedPostForDetail = t;
+                                    detailPostVotesLabel.setText(
+                                            "Likes: " + t.getLikeCount() + "  Dislikes: " + t.getDislikeCount());
+                                });
+                    }
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    JOptionPane.showMessageDialog(MainWindow.this, cause.getMessage(), "Vote failed",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
+    }
+
+    private void reactToComment(long commentId, boolean like) {
+        if (!forumService.getSession().isLoggedIn()) {
+            return;
+        }
+        SwingWorker<Boolean, Void> worker = new SwingWorker<>() {
+            @Override
+            protected Boolean doInBackground() throws Exception {
+                return forumService.reactToComment(commentId, like);
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    get();
+                    reloadCommentsForSelectedPost();
+                } catch (Exception ex) {
+                    Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+                    JOptionPane.showMessageDialog(MainWindow.this, cause.getMessage(), "Vote failed",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        };
+        worker.execute();
     }
 }
